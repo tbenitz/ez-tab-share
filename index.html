@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EZ Tab Share — Ephemeral WebRTC File Sharing</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>⚡ EZ Tab Share</h1>
+      <p class="subtitle">Share files instantly via WebRTC. Stays alive as long as someone with the full file keeps their tab open. No server storage. Fully encrypted.</p>
+    </header>
+
+    <div id="app">
+      <!-- Home view -->
+      <div id="home" class="view active">
+        <div class="cards">
+          <div class="card" id="share-card">
+            <h2>Share a file</h2>
+            <div class="dropzone" id="dropzone">
+              <p>Drag & drop a file here<br>or click to select</p>
+              <input type="file" id="file-input" hidden>
+            </div>
+            <div id="file-info" class="file-info hidden"></div>
+            <div class="options">
+              <label>Max downloads
+                <select id="max-downloads">
+                  <option value="1">1 (one-time, secure)</option>
+                  <option value="5">5</option>
+                  <option value="10">10</option>
+                  <option value="0" selected>Unlimited</option>
+                </select>
+              </label>
+              <label>Expires after
+                <select id="expiry">
+                  <option value="15">15 minutes</option>
+                  <option value="60" selected>1 hour</option>
+                  <option value="360">6 hours</option>
+                  <option value="1440">24 hours</option>
+                  <option value="0">Never (until tab closed)</option>
+                </select>
+              </label>
+              <label>Custom code (optional)
+                <input type="text" id="custom-code" placeholder="Leave blank for random" maxlength="12" pattern="[A-Z0-9]{4,12}">
+              </label>
+            </div>
+            <button id="create-btn" class="btn primary" disabled>Create share link</button>
+          </div>
+
+          <div class="card" id="get-card">
+            <h2>Get a file</h2>
+            <input type="text" id="join-code" placeholder="Enter share code" maxlength="12" autocomplete="off">
+            <button id="join-btn" class="btn primary">Join session</button>
+            <p class="hint">Or open a share link directly.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Hosting / Sharing view -->
+      <div id="hosting" class="view">
+        <h2>Sharing <span id="host-filename"></span></h2>
+        <div class="code-display">
+          <div class="code" id="share-code">------</div>
+          <button id="copy-code" class="btn small">Copy code</button>
+          <button id="copy-link" class="btn small">Copy link</button>
+        </div>
+        <div id="qr-container"></div>
+        <div class="status" id="host-status">
+          <span id="hosts-count">1 host</span> • 
+          <span id="remaining-info"></span> • 
+          <span id="expiry-info"></span>
+        </div>
+        <div class="peers" id="peers-list"></div>
+        <button id="stop-hosting" class="btn danger">Stop sharing</button>
+      </div>
+
+      <!-- Downloading view -->
+      <div id="downloading" class="view">
+        <h2>Downloading <span id="dl-filename"></span></h2>
+        <div class="progress-container">
+          <div class="progress-bar"><div class="progress-fill" id="dl-progress"></div></div>
+          <div class="progress-text" id="dl-progress-text">Connecting...</div>
+        </div>
+        <div id="dl-status" class="status"></div>
+        <div id="keep-hosting" class="hidden">
+          <label><input type="checkbox" id="continue-host" checked> Keep this tab open to help others download</label>
+          <p class="hint">Your browser will serve the file to new people as long as this tab stays open.</p>
+        </div>
+      </div>
+
+      <!-- Received view -->
+      <div id="received" class="view">
+        <h2>File received!</h2>
+        <p id="received-name"></p>
+        <button id="save-file" class="btn primary">Save file</button>
+        <div id="received-hosting"></div>
+      </div>
+    </div>
+
+    <footer>
+      <p>Files never leave your browser until you send them. WebRTC provides end-to-end encryption. Keep the tab open to keep the share alive.</p>
+      <p class="small">Built with Trystero • <a href="https://github.com/tbenitz/ez-tab-share" target="_blank">Source</a></p>
+    </footer>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
