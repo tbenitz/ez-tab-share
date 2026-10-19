@@ -1,7 +1,7 @@
 // EZ Tab Share — Ephemeral WebRTC file sharing with Trystero
 // Stays live as long as any peer who has the full file keeps their tab open.
 
-import { joinRoom, selfId } from 'https://cdn.jsdelivr.net/npm/trystero@0.26.0/dist/trystero.min.js';
+import { joinRoom, selfId } from 'https://cdn.jsdelivr.net/npm/trystero@0.26.0/+esm';
 
 const APP_ID = 'ez-tab-share-v1';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -164,7 +164,6 @@ async function joinSession(code) {
       updatePeers();
       updateHostStatus();
       if (!isHost && !receivedBlob && hosts.size > 0) {
-        // Request from the first available host
         const hostId = hosts.keys().next().value;
         requestAction.send({ want: true }, { target: hostId });
         $('dl-progress-text').textContent = 'Requesting file from host…';
@@ -219,7 +218,6 @@ async function joinSession(code) {
     $('dl-progress-text').textContent = 'Connecting to session…';
   }
 
-  // Re-announce periodically
   const interval = setInterval(() => {
     if (isHost && room) broadcastAnnounce();
     else clearInterval(interval);
@@ -233,8 +231,8 @@ function updatePeers() {
     list.textContent = isHost ? 'Waiting for someone to join…' : 'No hosts found yet. Make sure the sharer still has the tab open.';
     return;
   }
-  list.innerHTML = '<strong>Available hosts:</strong><br>' + 
-    Array.from(hosts.values()).map(h => 
+  list.innerHTML = '<strong>Available hosts:</strong><br>' +
+    Array.from(hosts.values()).map(h =>
       `• ${h.name} (${formatBytes(h.size)})`
     ).join('<br>');
 }
@@ -286,7 +284,6 @@ function stopHosting() {
 
 $('stop-hosting').addEventListener('click', stopHosting);
 
-// Live expiry countdown
 setInterval(() => {
   if (expiresAt && isHost) updateHostStatus();
 }, 10000);
