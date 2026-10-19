@@ -73,7 +73,8 @@ function startHosting(code) {
   currentCode = code;
   showView('hosting');
   $('host-filename').textContent = currentFile.name;
-  $('share-code').textContent = code;
+  $('share-code').textContent = '…';
+  $('host-status').textContent = 'Registering share…';
 
   const url = location.origin + location.pathname + '?code=' + code;
   $('copy-code').onclick = () => navigator.clipboard.writeText(code);
@@ -81,12 +82,14 @@ function startHosting(code) {
 
   peer = new Peer(code, { debug: 1 });
   peer.on('open', id => {
+    $('share-code').textContent = code;
     updateStatus();
     console.log('Hosting as', id);
   });
   peer.on('connection', conn => handleIncoming(conn));
   peer.on('error', err => {
     console.error(err);
+    $('host-status').textContent = 'Error: ' + (err.message || err.type);
     if (err.type === 'unavailable-id') alert('That code is already in use. Try another.');
   });
 }
@@ -149,24 +152,49 @@ if (params.has('code')) {
   setTimeout(() => $('join-btn').click(), 300);
 }
 
-function join(code) {
+function join(code, attempt = 1) {
   showView('downloading');
-  $('dl-progress-text').textContent = 'Connecting to host…';
+  $('dl-progress-text').textContent = attempt === 1 ? 'Connecting to host…' : `Retrying… (${attempt}/4)`;
+
+  if (peer) peer.destroy();
   peer = new Peer({ debug: 1 });
+
   peer.on('open', () => {
     const conn = peer.connect(code, { reliable: true });
+    let connected = false;
+
     conn.on('open', () => {
+      connected = true;
       $('dl-progress-text').textContent = 'Connected, waiting for file…';
     });
+
     conn.on('data', data => handleIncomingData(data));
+
     conn.on('error', err => {
-      $('dl-progress-text').textContent = 'Connection failed. Host may have closed the tab.';
-      console.error(err);
+      console.error('conn error', err);
+      if (!connected && attempt < 4) {
+        setTimeout(() => join(code, attempt + 1), 1500);
+      } else {
+        $('dl-progress-text').textContent = 'Could not connect. Make sure the host still has the tab open and try again.';
+      }
     });
+
+    // Timeout fallback
+    setTimeout(() => {
+      if (!connected && attempt < 4) {
+        console.log('timeout, retrying');
+        join(code, attempt + 1);
+      }
+    }, 6000);
   });
+
   peer.on('error', err => {
-    $('dl-progress-text').textContent = 'Could not connect. Check the code and that the host still has the tab open.';
-    console.error(err);
+    console.error('peer error', err);
+    if (attempt < 4) {
+      setTimeout(() => join(code, attempt + 1), 1500);
+    } else {
+      $('dl-progress-text').textContent = 'Could not reach signaling server. Try again in a moment.';
+    }
   });
 }
 
