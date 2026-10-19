@@ -1,23 +1,18 @@
-// EZ Tab Share — Ephemeral WebRTC file sharing with Trystero
-// Stays live as long as any peer who has the full file keeps their tab open.
+// EZ Tab Share — PeerJS version (reliable public signaling, pure WebRTC data)
+// Host tab stays open = share stays alive. Downloaders can also keep hosting.
 
-import { joinRoom, selfId } from 'https://cdn.jsdelivr.net/npm/trystero@0.26.0/+esm';
-
-const APP_ID = 'ez-tab-share-v1';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-let room = null;
-let announce = null;
-let requestAction = null;
-let fileAction = null;
+let peer = null;
+let connections = [];
 let currentFile = null;
 let isHost = false;
 let maxDownloads = 0;
-let remainingDownloads = Infinity;
+let remaining = Infinity;
 let expiresAt = 0;
-let hosts = new Map();
-let receivedBlob = null;
 let currentCode = '';
+let receivedChunks = [];
+let expectedSize = 0;
+let receivedSize = 0;
 
 const $ = id => document.getElementById(id);
 const views = ['home', 'hosting', 'downloading', 'received'];
@@ -31,261 +26,194 @@ function generateCode(len = 6) {
   return Array.from(bytes, b => ALPHABET[b % ALPHABET.length]).join('');
 }
 
-function formatBytes(bytes) {
-  if (!bytes) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+function formatBytes(n) {
+  if (!n) return '0 B';
+  const k = 1024, sizes = ['B','KB','MB','GB'];
+  const i = Math.floor(Math.log(n) / Math.log(k));
+  return (n / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
 }
 
-function formatTime(ms) {
-  if (ms <= 0) return 'expired';
-  const s = Math.floor(ms / 1000);
-  const m = Math.floor(s / 60);
-  const h = Math.floor(m / 60);
-  if (h > 0) return `${h}h ${m % 60}m`;
-  if (m > 0) return `${m}m ${s % 60}s`;
-  return `${s}s`;
-}
-
-// File selection
+// --- File selection ---
 const dropzone = $('dropzone');
 const fileInput = $('file-input');
 const fileInfo = $('file-info');
 const createBtn = $('create-btn');
 
-dropzone.addEventListener('click', () => fileInput.click());
-dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
-dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-dropzone.addEventListener('drop', e => {
+dropzone.onclick = () => fileInput.click();
+dropzone.ondragover = e => { e.preventDefault(); dropzone.classList.add('dragover'); };
+dropzone.ondragleave = () => dropzone.classList.remove('dragover');
+dropzone.ondrop = e => {
   e.preventDefault();
   dropzone.classList.remove('dragover');
-  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
-});
-fileInput.addEventListener('change', () => {
-  if (fileInput.files.length) handleFile(fileInput.files[0]);
-});
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+};
+fileInput.onchange = () => fileInput.files[0] && handleFile(fileInput.files[0]);
 
 function handleFile(file) {
-  currentFile = { name: file.name, size: file.size, type: file.type || 'application/octet-stream', blob: file };
-  fileInfo.innerHTML = `<strong>${file.name}</strong><br>${formatBytes(file.size)} • ${file.type || 'unknown'}`;
+  currentFile = file;
+  fileInfo.innerHTML = `<strong>${file.name}</strong><br>${formatBytes(file.size)}`;
   fileInfo.classList.remove('hidden');
   createBtn.disabled = false;
 }
 
-// Create
-createBtn.addEventListener('click', async () => {
+// --- Create share ---
+createBtn.onclick = () => {
   if (!currentFile) return;
   const custom = $('custom-code').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
   const code = custom.length >= 4 ? custom : generateCode();
   maxDownloads = parseInt($('max-downloads').value, 10);
-  remainingDownloads = maxDownloads === 0 ? Infinity : maxDownloads;
-  const expiryMin = parseInt($('expiry').value, 10);
-  expiresAt = expiryMin === 0 ? 0 : Date.now() + expiryMin * 60 * 1000;
-  currentCode = code;
-  await startHosting(code);
-});
+  remaining = maxDownloads === 0 ? Infinity : maxDownloads;
+  const mins = parseInt($('expiry').value, 10);
+  expiresAt = mins === 0 ? 0 : Date.now() + mins * 60 * 1000;
+  startHosting(code);
+};
 
-async function startHosting(code) {
+function startHosting(code) {
   isHost = true;
+  currentCode = code;
   showView('hosting');
   $('host-filename').textContent = currentFile.name;
   $('share-code').textContent = code;
-  updateHostStatus();
 
-  const url = `${location.origin}${location.pathname}?code=${code}`;
-  $('copy-link').onclick = () => navigator.clipboard.writeText(url).then(() => alert('Link copied!'));
-  $('copy-code').onclick = () => navigator.clipboard.writeText(code).then(() => alert('Code copied!'));
+  const url = location.origin + location.pathname + '?code=' + code;
+  $('copy-code').onclick = () => navigator.clipboard.writeText(code);
+  $('copy-link').onclick = () => navigator.clipboard.writeText(url);
 
-  try {
-    const { default: QRCode } = await import('https://cdn.jsdelivr.net/npm/qrcode@1.5.3/+esm');
-    const canvas = document.createElement('canvas');
-    await QRCode.toCanvas(canvas, url, { width: 180, margin: 1, color: { dark: '#00d4aa', light: '#fff' } });
-    $('qr-container').innerHTML = '';
-    $('qr-container').appendChild(canvas);
-  } catch {
-    $('qr-container').innerHTML = `<p class="hint"><a href="${url}" target="_blank">${url}</a></p>`;
-  }
-
-  await joinSession(code);
+  peer = new Peer(code, { debug: 1 });
+  peer.on('open', id => {
+    updateStatus();
+    console.log('Hosting as', id);
+  });
+  peer.on('connection', conn => handleIncoming(conn));
+  peer.on('error', err => {
+    console.error(err);
+    if (err.type === 'unavailable-id') alert('That code is already in use. Try another.');
+  });
 }
 
-// Join
-$('join-btn').addEventListener('click', () => {
-  const code = $('join-code').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (code.length < 4) return alert('Enter a valid code (4+ characters)');
-  currentCode = code;
-  joinSession(code);
-});
+function handleIncoming(conn) {
+  connections.push(conn);
+  conn.on('open', () => {
+    if (expiresAt && Date.now() > expiresAt) { conn.close(); return; }
+    if (remaining <= 0 && remaining !== Infinity) { conn.close(); return; }
 
-// URL param
+    // Send metadata first
+    conn.send({ type: 'meta', name: currentFile.name, size: currentFile.size, mime: currentFile.type });
+
+    // Then stream the file in chunks
+    const chunkSize = 64 * 1024;
+    const reader = currentFile.stream().getReader();
+    let sent = 0;
+
+    function sendNext() {
+      reader.read().then(({ done, value }) => {
+        if (done) {
+          conn.send({ type: 'done' });
+          if (remaining !== Infinity) {
+            remaining--;
+            if (remaining <= 0) setTimeout(stopHosting, 1000);
+          }
+          updateStatus();
+          return;
+        }
+        conn.send({ type: 'chunk', data: value });
+        sent += value.byteLength;
+        setTimeout(sendNext, 0); // yield
+      });
+    }
+    sendNext();
+  });
+  conn.on('close', () => {
+    connections = connections.filter(c => c !== conn);
+    updateStatus();
+  });
+}
+
+function updateStatus() {
+  if (!$('host-status')) return;
+  const rem = remaining === Infinity ? 'Unlimited' : remaining + ' left';
+  const exp = expiresAt ? 'Expires in ' + Math.max(0, Math.round((expiresAt - Date.now()) / 60000)) + ' min' : 'No expiry';
+  $('host-status').textContent = `${connections.length} connected • ${rem} • ${exp}`;
+}
+
+// --- Join ---
+$('join-btn').onclick = () => {
+  const code = $('join-code').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (code.length < 4) return alert('Enter a valid code');
+  join(code);
+};
+
 const params = new URLSearchParams(location.search);
 if (params.has('code')) {
   $('join-code').value = params.get('code');
-  setTimeout(() => $('join-btn').click(), 400);
+  setTimeout(() => $('join-btn').click(), 300);
 }
 
-async function joinSession(code) {
-  if (room) room.leave();
-  room = joinRoom({ appId: APP_ID }, code);
-
-  announce = room.makeAction('announce');
-  requestAction = room.makeAction('request');
-  fileAction = room.makeAction('file');
-
-  function broadcastAnnounce() {
-    if (!isHost || !currentFile) return;
-    announce.send({
-      hasFile: true,
-      name: currentFile.name,
-      size: currentFile.size,
-      type: currentFile.type,
-      maxDownloads,
-      remaining: remainingDownloads === Infinity ? -1 : remainingDownloads,
-      expiresAt,
-      peerId: selfId
+function join(code) {
+  showView('downloading');
+  $('dl-progress-text').textContent = 'Connecting to host…';
+  peer = new Peer({ debug: 1 });
+  peer.on('open', () => {
+    const conn = peer.connect(code, { reliable: true });
+    conn.on('open', () => {
+      $('dl-progress-text').textContent = 'Connected, waiting for file…';
     });
-  }
-
-  room.onPeerJoin = peerId => {
-    if (isHost) broadcastAnnounce();
-    updatePeers();
-  };
-  room.onPeerLeave = peerId => {
-    hosts.delete(peerId);
-    updatePeers();
-    updateHostStatus();
-  };
-
-  announce.onMessage = (data, peerId) => {
-    if (data.hasFile) {
-      hosts.set(peerId, data);
-      updatePeers();
-      updateHostStatus();
-      if (!isHost && !receivedBlob && hosts.size > 0) {
-        const hostId = hosts.keys().next().value;
-        requestAction.send({ want: true }, { target: hostId });
-        $('dl-progress-text').textContent = 'Requesting file from host…';
-      }
-    }
-  };
-
-  requestAction.onMessage = async (data, peerId) => {
-    if (!isHost || !currentFile) return;
-    if (expiresAt && Date.now() > expiresAt) return;
-    if (remainingDownloads <= 0 && remainingDownloads !== Infinity) return;
-
-    try {
-      await fileAction.send(currentFile.blob, {
-        target: peerId,
-        metadata: { name: currentFile.name, type: currentFile.type, size: currentFile.size },
-        onProgress: p => {
-          console.log(`Sending to ${peerId.slice(0,6)}: ${Math.round(p * 100)}%`);
-        }
-      });
-      if (remainingDownloads !== Infinity) {
-        remainingDownloads = Math.max(0, remainingDownloads - 1);
-        if (remainingDownloads <= 0) {
-          setTimeout(stopHosting, 1500);
-        }
-      }
-      broadcastAnnounce();
-      updateHostStatus();
-    } catch (err) {
-      console.error('Transfer failed:', err);
-    }
-  };
-
-  fileAction.onMessage = (data, peerId, meta) => {
-    receivedBlob = new Blob([data], { type: meta?.type || 'application/octet-stream' });
-    currentFile = {
-      name: meta?.name || 'shared-file',
-      size: receivedBlob.size,
-      type: meta?.type || 'application/octet-stream',
-      blob: receivedBlob
-    };
-    isHost = true;
-    remainingDownloads = Infinity;
-    showReceived();
-  };
-
-  if (isHost) {
-    broadcastAnnounce();
-  } else {
-    showView('downloading');
-    $('dl-filename').textContent = 'Looking for file…';
-    $('dl-progress-text').textContent = 'Connecting to session…';
-  }
-
-  const interval = setInterval(() => {
-    if (isHost && room) broadcastAnnounce();
-    else clearInterval(interval);
-  }, 7000);
+    conn.on('data', data => handleIncomingData(data));
+    conn.on('error', err => {
+      $('dl-progress-text').textContent = 'Connection failed. Host may have closed the tab.';
+      console.error(err);
+    });
+  });
+  peer.on('error', err => {
+    $('dl-progress-text').textContent = 'Could not connect. Check the code and that the host still has the tab open.';
+    console.error(err);
+  });
 }
 
-function updatePeers() {
-  const list = $('peers-list');
-  if (!list) return;
-  if (hosts.size === 0) {
-    list.textContent = isHost ? 'Waiting for someone to join…' : 'No hosts found yet. Make sure the sharer still has the tab open.';
-    return;
+function handleIncomingData(msg) {
+  if (msg.type === 'meta') {
+    expectedSize = msg.size;
+    $('dl-filename').textContent = msg.name;
+    receivedChunks = [];
+    receivedSize = 0;
+  } else if (msg.type === 'chunk') {
+    receivedChunks.push(msg.data);
+    receivedSize += msg.data.byteLength;
+    const pct = expectedSize ? Math.round(receivedSize / expectedSize * 100) : 0;
+    $('dl-progress').style.width = pct + '%';
+    $('dl-progress-text').textContent = pct + '% • ' + formatBytes(receivedSize);
+  } else if (msg.type === 'done') {
+    const blob = new Blob(receivedChunks);
+    currentFile = blob;
+    currentFile.name = $('dl-filename').textContent;
+    showReceived(blob);
   }
-  list.innerHTML = '<strong>Available hosts:</strong><br>' +
-    Array.from(hosts.values()).map(h =>
-      `• ${h.name} (${formatBytes(h.size)})`
-    ).join('<br>');
 }
 
-function updateHostStatus() {
-  if (!$('hosts-count')) return;
-  const count = (isHost ? 1 : 0) + hosts.size;
-  $('hosts-count').textContent = `${count} host${count === 1 ? '' : 's'} online`;
-  const rem = remainingDownloads === Infinity ? 'Unlimited' : `${remainingDownloads} left`;
-  $('remaining-info').textContent = rem;
-  const exp = expiresAt ? `Expires in ${formatTime(expiresAt - Date.now())}` : 'No expiry';
-  $('expiry-info').textContent = exp;
-}
-
-function showReceived() {
+function showReceived(blob) {
   showView('received');
-  $('received-name').textContent = `${currentFile.name} • ${formatBytes(currentFile.size)}`;
+  $('received-name').textContent = (blob.name || 'file') + ' • ' + formatBytes(blob.size);
   $('save-file').onclick = () => {
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(currentFile.blob);
-    a.download = currentFile.name;
-    document.body.appendChild(a);
+    a.href = URL.createObjectURL(blob);
+    a.download = blob.name || 'download';
     a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
-  $('received-hosting').innerHTML = `
-    <div class="status" style="margin-top:1.5rem">
-      <strong>You are now hosting this file.</strong><br>
-      Keep this tab open so others can download it.<br>
-      Share code: <span style="color:var(--accent);font-family:monospace;font-size:1.2rem">${currentCode}</span>
-    </div>
-  `;
 }
 
 function stopHosting() {
-  if (room) room.leave();
-  room = null;
+  if (peer) peer.destroy();
+  peer = null;
   isHost = false;
-  currentFile = null;
-  receivedBlob = null;
-  hosts.clear();
+  connections = [];
   showView('home');
   fileInfo.classList.add('hidden');
   createBtn.disabled = true;
   fileInput.value = '';
-  $('custom-code').value = '';
 }
 
-$('stop-hosting').addEventListener('click', stopHosting);
+$('stop-hosting').onclick = stopHosting;
 
-setInterval(() => {
-  if (expiresAt && isHost) updateHostStatus();
-}, 10000);
+setInterval(() => { if (isHost) updateStatus(); }, 10000);
 
-console.log('EZ Tab Share ready • Peer:', selfId);
+console.log('EZ Tab Share (PeerJS) ready');
